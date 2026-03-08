@@ -14,6 +14,7 @@ from retail_logic import (
     check_inventory,
     get_back_office_color_candidates,
     get_product_by_id,
+    match_products_from_style_brief,
     reserve_item,
     search_products,
     verify_back_office_hold,
@@ -40,7 +41,11 @@ mcp = FastMCP(
     instructions=(
         "Use these tools to help a luxury retail associate interpret a customer's inspiration image, "
         "find matching eveningwear, check nearby inventory, verify alternate colors from today's inbound "
-        "back-office shipments, and place a store pickup hold."
+        "back-office shipments, and place a store pickup hold. If the user uploads an image directly in "
+        "ChatGPT, inspect the image yourself and call find_matching_products_from_chat_image with the "
+        "dress attributes you observe. Use the filename-based image tools only for backend-known demo files "
+        "such as gala_inspiration.jpg. Guide the associate one step at a time: first the dress match, then "
+        "inventory or alternate color, then styling add-ons, then hold preparation if requested."
     ),
 )
 
@@ -79,6 +84,30 @@ def find_matching_products_from_photo(file_name: str = "gala_inspiration.jpg") -
         "analysis": analysis,
         "matches": matches["results"],
     }
+
+
+@mcp.tool(
+    description=(
+        "Use this when the user uploaded a dress image directly in ChatGPT. Inspect the image yourself, "
+        "extract the dress attributes, and pass them here because the MCP server cannot read chat "
+        "attachments directly."
+    ),
+    annotations=READ_ONLY_TOOL,
+)
+def find_matching_products_from_chat_image(
+    category: str,
+    occasion: str,
+    color: str,
+    style_tags: list[str],
+    visual_summary: str | None = None,
+) -> dict[str, Any]:
+    return match_products_from_style_brief(
+        category=category,
+        occasion=occasion,
+        color=color,
+        style_tags=style_tags,
+        visual_summary=visual_summary,
+    )
 
 
 @mcp.tool(

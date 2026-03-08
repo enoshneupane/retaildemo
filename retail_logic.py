@@ -14,6 +14,55 @@ INBOUND_SHIPMENTS_CSV = DATA_DIR / "inbound_shipments.csv"
 PREFERRED_SIZE = "6"
 NEARBY_STORES = ["San Francisco Union Square", "Palo Alto", "San Jose Santana Row"]
 FORMAL_OCCASIONS = {"gala", "formal", "black tie", "cocktail"}
+STYLE_TAG_SYNONYMS = {
+    "classic": "elegant",
+    "elevated": "luxury",
+    "glam": "luxury",
+    "glamorous": "luxury",
+    "minimal": "elegant",
+    "modern": "modern",
+    "party": "party",
+    "romantic": "soft",
+    "sleek": "modern",
+    "soft": "soft",
+    "statement": "statement",
+    "timeless": "elegant",
+}
+
+CATEGORY_ALIASES = {
+    "cocktail dress": "Dress",
+    "dress": "Dress",
+    "evening dress": "Dress",
+    "evening gown": "Dress",
+    "gala gown": "Dress",
+    "gown": "Dress",
+    "mini dress": "Dress",
+}
+
+OCCASION_ALIASES = {
+    "black tie": "Black Tie",
+    "black-tie": "Black Tie",
+    "cocktail": "Cocktail",
+    "formal": "Formal",
+    "gala": "Gala",
+    "party": "Cocktail",
+}
+
+COLOR_ALIASES = {
+    "beige": "Champagne",
+    "black": "Black",
+    "champagne": "Champagne",
+    "cream": "Champagne",
+    "emerald": "Emerald",
+    "gold": "Champagne",
+    "golden": "Champagne",
+    "green": "Emerald",
+    "ivory": "Champagne",
+    "metallic": "Silver",
+    "pearl": "Pearl",
+    "silver": "Silver",
+    "white": "Pearl",
+}
 
 
 @lru_cache(maxsize=1)
@@ -47,6 +96,78 @@ def analyze_uploaded_photo(file_name: str) -> Dict[str, Any]:
         "status": "success",
         "file_name": file_name,
         **profile,
+    }
+
+
+def _canonicalize_value(value: str, aliases: Dict[str, str], default: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    if text in aliases:
+        return aliases[text]
+    for alias, canonical in aliases.items():
+        if alias in text or text in alias:
+            return canonical
+    return default
+
+
+def normalize_style_inputs(
+    category: str,
+    occasion: str,
+    color: str,
+    style_tags: List[str],
+    visual_summary: str | None = None,
+) -> Dict[str, Any]:
+    summary = str(visual_summary or "").strip()
+    category_value = _canonicalize_value(category, CATEGORY_ALIASES, "Dress")
+    occasion_value = _canonicalize_value(occasion, OCCASION_ALIASES, "Gala")
+    color_value = _canonicalize_value(color, COLOR_ALIASES, "Black")
+
+    normalized_tags: List[str] = []
+    for raw_tag in style_tags:
+        for piece in str(raw_tag).split(","):
+            tag = piece.strip().lower()
+            if not tag:
+                continue
+            normalized_tags.append(STYLE_TAG_SYNONYMS.get(tag, tag))
+
+    if not normalized_tags:
+        normalized_tags = ["elegant", "evening", "luxury"]
+
+    deduped_tags = list(dict.fromkeys(normalized_tags))
+    return {
+        "category": category_value,
+        "occasion": occasion_value,
+        "color": color_value,
+        "style_tags": deduped_tags,
+        "visual_summary": summary,
+    }
+
+
+def match_products_from_style_brief(
+    category: str,
+    occasion: str,
+    color: str,
+    style_tags: List[str],
+    visual_summary: str | None = None,
+) -> Dict[str, Any]:
+    analysis = normalize_style_inputs(
+        category=category,
+        occasion=occasion,
+        color=color,
+        style_tags=style_tags,
+        visual_summary=visual_summary,
+    )
+    matches = search_products(
+        category=analysis["category"],
+        occasion=analysis["occasion"],
+        color=analysis["color"],
+        style_tags=analysis["style_tags"],
+    )
+    return {
+        "status": "success",
+        "analysis": analysis,
+        "matches": matches["results"],
     }
 
 
