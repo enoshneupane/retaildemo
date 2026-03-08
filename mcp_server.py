@@ -1,7 +1,9 @@
 import os
 from functools import lru_cache
+from html import escape
 from io import BytesIO
 from typing import Any
+from urllib.parse import quote
 
 from fastmcp import FastMCP
 from fastmcp.server.apps import AppConfig, ResourceCSP
@@ -208,11 +210,41 @@ def _match_tool_result(analysis: dict[str, Any], matches: list[dict[str, Any]]) 
     )
 
 
+def _gallery_url(matches: list[dict[str, Any]]) -> str | None:
+    product_ids = ",".join(
+        str(match["product_id"]) for match in matches[:3] if match.get("product_id")
+    )
+    if not product_ids:
+        return None
+    return f"{PUBLIC_BASE_URL}/gallery?product_ids={quote(product_ids)}"
+
+
+def _match_display_markdown(matches: list[dict[str, Any]]) -> str:
+    sections = []
+    for match in matches[:3]:
+        image_url = match.get("image_url")
+        if image_url:
+            sections.append(f"![{match['product_name']}]({image_url})")
+        sections.append(
+            "\n".join(
+                [
+                    f"**{match['rank']}. {match['product_name']}**",
+                    f"{match['brand']} | ${match['price']} | {match['color']} | {match['occasion']}",
+                    match["match_reason"],
+                ]
+            )
+        )
+    return "\n\n".join(sections)
+
+
 def _match_response(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> dict[str, Any]:
+    cards = _carousel_matches(analysis, matches)
     return {
         "status": "success",
         "analysis": analysis,
-        "matches": _carousel_matches(analysis, matches),
+        "matches": cards,
+        "gallery_url": _gallery_url(cards),
+        "display_markdown": _match_display_markdown(cards),
     }
 
 
@@ -597,6 +629,14 @@ def _openapi_spec(base_url: str) -> dict[str, Any]:
                     "properties": {
                         "status": {"type": "string"},
                         "analysis": {"type": "object", "additionalProperties": True},
+                        "gallery_url": {
+                            "type": "string",
+                            "description": "Hosted lookbook page with the top 3 dress images and details.",
+                        },
+                        "display_markdown": {
+                            "type": "string",
+                            "description": "Prebuilt markdown that renders the top 3 dress images and concise dress details.",
+                        },
                         "matches": {
                             "type": "array",
                             "items": {"$ref": "#/components/schemas/ProductMatch"},
@@ -755,6 +795,8 @@ Tone:
 - never overwhelm the customer
 
 If there is an uploaded dress image, summarize the observed silhouette, occasion, color, and style cues before calling `matchFromStyleBrief`.
+After a dress-match action returns, use the `display_markdown` field directly so the three product images render inline whenever the chat surface allows markdown images.
+If the images do not render inline, immediately share the `gallery_url` from the action result so the associate still has a guaranteed visual lookbook with the same top 3 dresses.
 """
 
 
@@ -1328,6 +1370,174 @@ async def gpt_instructions(_: Request) -> PlainTextResponse:
     return PlainTextResponse(GPT_ACTION_INSTRUCTIONS)
 
 
+async def gallery(request: Request) -> HTMLResponse:
+    product_ids = request.query_params.get("product_ids", "")
+    products = []
+    for product_id in [item.strip() for item in product_ids.split(",") if item.strip()][:3]:
+        product = get_product_by_id(product_id)
+        if product:
+            products.append(_product_with_image_url(product))
+
+    if not products:
+        return HTMLResponse(
+            """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RetailNext Dress Lookbook</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f7f3ee; color: #18181b; }
+      main { max-width: 720px; margin: 0 auto; padding: 56px 24px; }
+      h1 { margin: 0 0 12px; font-size: 32px; }
+      p { margin: 0; line-height: 1.6; color: rgba(24, 24, 27, 0.72); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>RetailNext Dress Lookbook</h1>
+      <p>No dress matches were provided for this lookbook link.</p>
+    </main>
+  </body>
+</html>"""
+        )
+
+    cards = []
+    for rank, product in enumerate(products, start=1):
+        image_html = ""
+        if product.get("image_url"):
+            image_html = (
+                f'<img src="{escape(product["image_url"], quote=True)}" '
+                f'alt="{escape(product["product_name"], quote=True)}">'
+            )
+        cards.append(
+            """
+            <article class="card">
+              <div class="image-wrap">{image_html}</div>
+              <div class="body">
+                <div class="rank">Top {rank}</div>
+                <h2>{product_name}</h2>
+                <p class="meta">{brand} | ${price} | {color} | {occasion}</p>
+                <p class="detail">{material}</p>
+              </div>
+            </article>
+            """.format(
+                image_html=image_html,
+                rank=rank,
+                product_name=escape(str(product["product_name"])),
+                brand=escape(str(product["brand"])),
+                price=escape(str(product["price"])),
+                color=escape(str(product["color"])),
+                occasion=escape(str(product["occasion"])),
+                material=escape(str(product.get("material", "Eveningwear"))),
+            )
+        )
+
+    html = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RetailNext Dress Lookbook</title>
+    <style>
+      :root {
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #18181b;
+        background: #f6f1ea;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at top left, rgba(214, 188, 155, 0.22), transparent 38%),
+          linear-gradient(180deg, #faf7f2 0%, #f1e9df 100%);
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 40px 20px 56px;
+      }
+      .eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(24, 24, 27, 0.52);
+      }
+      h1 {
+        margin: 10px 0 8px;
+        font-size: clamp(32px, 5vw, 48px);
+        line-height: 1.05;
+      }
+      .subhead {
+        max-width: 760px;
+        margin: 0 0 28px;
+        line-height: 1.6;
+        color: rgba(24, 24, 27, 0.72);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 20px;
+      }
+      .card {
+        overflow: hidden;
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(24, 24, 27, 0.08);
+        box-shadow: 0 18px 40px rgba(24, 24, 27, 0.08);
+      }
+      .image-wrap {
+        aspect-ratio: 4 / 5;
+        background: linear-gradient(180deg, rgba(214, 188, 155, 0.18), rgba(17, 24, 39, 0.08));
+      }
+      .image-wrap img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .body {
+        padding: 18px 18px 20px;
+      }
+      .rank {
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(24, 24, 27, 0.54);
+      }
+      h2 {
+        margin: 8px 0 8px;
+        font-size: 21px;
+        line-height: 1.2;
+      }
+      .meta,
+      .detail {
+        margin: 0;
+        line-height: 1.5;
+      }
+      .meta {
+        color: rgba(24, 24, 27, 0.74);
+      }
+      .detail {
+        margin-top: 10px;
+        color: rgba(24, 24, 27, 0.56);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">RetailNext Luxury Assistant</div>
+      <h1>Top 3 Gala Dress Matches</h1>
+      <p class="subhead">Use this visual lookbook if the GPT chat surface does not render the inline dress images. It keeps the same top three recommendations with the image and core dress details intact.</p>
+      <section class="grid">
+        __CARDS__
+      </section>
+    </main>
+  </body>
+</html>"""
+    return HTMLResponse(html.replace("__CARDS__", "".join(cards)))
+
+
 async def api_match_from_style_brief(request: Request) -> JSONResponse:
     payload = await _json_payload(request)
     required = ["category", "occasion", "color", "style_tags"]
@@ -1454,6 +1664,7 @@ app.add_route("/health", health, methods=["GET"])
 app.add_route("/openapi.json", openapi, methods=["GET"])
 app.add_route("/privacy", privacy, methods=["GET"])
 app.add_route("/gpt-instructions.txt", gpt_instructions, methods=["GET"])
+app.add_route("/gallery", gallery, methods=["GET"])
 app.add_route("/api/match-from-style-brief", api_match_from_style_brief, methods=["POST"])
 app.add_route("/api/match-from-demo-photo", api_match_from_demo_photo, methods=["POST"])
 app.add_route("/api/check-inventory", api_check_inventory, methods=["POST"])
