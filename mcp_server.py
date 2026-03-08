@@ -1,3 +1,4 @@
+import base64
 import os
 from functools import lru_cache
 from html import escape
@@ -131,6 +132,19 @@ def _image_block(match: dict[str, Any]) -> Any | None:
     ).to_image_content()
 
 
+@lru_cache(maxsize=16)
+def _thumbnail_data_url(local_image_path: str) -> str:
+    encoded = base64.b64encode(_thumbnail_bytes(local_image_path)).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _inline_thumbnail_data_url(image_path: str | None) -> str | None:
+    local_path = _local_image_path(image_path)
+    if not local_path:
+        return None
+    return _thumbnail_data_url(local_path)
+
+
 def _match_reason(analysis: dict[str, Any], product: dict[str, Any]) -> str:
     reasons = []
 
@@ -157,17 +171,25 @@ def _match_reason(analysis: dict[str, Any], product: dict[str, Any]) -> str:
     return ", ".join(reasons[:3]).capitalize() + "."
 
 
-def _carousel_matches(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _carousel_matches(
+    analysis: dict[str, Any],
+    matches: list[dict[str, Any]],
+    *,
+    include_inline_images: bool = False,
+) -> list[dict[str, Any]]:
     cards = []
     for rank, match in enumerate(matches[:3], start=1):
         enriched = _product_with_image_url(match)
-        cards.append(
-            {
-                **enriched,
-                "rank": rank,
-                "match_reason": _match_reason(analysis, match),
-            }
-        )
+        card = {
+            **enriched,
+            "rank": rank,
+            "match_reason": _match_reason(analysis, match),
+        }
+        if include_inline_images:
+            thumbnail_data_url = _inline_thumbnail_data_url(match.get("image_path"))
+            if thumbnail_data_url:
+                card["thumbnail_data_url"] = thumbnail_data_url
+        cards.append(card)
     return cards
 
 
@@ -183,7 +205,7 @@ def _match_summary(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> s
 
 
 def _match_tool_result(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> ToolResult:
-    cards = _carousel_matches(analysis, matches)
+    cards = _carousel_matches(analysis, matches, include_inline_images=True)
     content: list[Any] = [TextContent(type="text", text=_match_summary(analysis, cards))]
 
     for match in cards:
@@ -818,6 +840,7 @@ def match_carousel_resource() -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>RetailNext Match Carousel</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@12/swiper-bundle.min.css">
     <style>
       :root {
         color-scheme: light dark;
@@ -858,32 +881,66 @@ def match_carousel_resource() -> str:
       .carousel {
         padding: 0 16px 16px;
       }
-      .frame {
-        position: relative;
-        overflow: hidden;
-        border-radius: 20px;
+      .swiper {
+        padding-bottom: 34px;
+        overflow: visible;
       }
-      .track {
-        display: flex;
-        transition: transform 240ms ease;
+      .swiper-slide {
+        height: auto;
       }
       .card {
-        min-width: 100%;
         box-sizing: border-box;
         background: rgba(255, 255, 255, 0.9);
         border: 1px solid rgba(24, 24, 27, 0.08);
         border-radius: 20px;
         overflow: hidden;
+        height: 100%;
       }
       .image-wrap {
+        position: relative;
         aspect-ratio: 4 / 5;
         background: #ece7df;
+      }
+      .image-wrap::after {
+        content: "Loading image";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(24, 24, 27, 0.5);
+        background: linear-gradient(180deg, rgba(236, 231, 223, 0.96), rgba(228, 220, 210, 0.92));
+      }
+      .image-wrap.loaded::after,
+      .image-wrap.image-error::after {
+        display: none;
       }
       .image-wrap img {
         display: block;
         width: 100%;
         height: 100%;
         object-fit: cover;
+        opacity: 0;
+        transition: opacity 140ms ease;
+      }
+      .image-wrap.loaded img {
+        opacity: 1;
+      }
+      .image-wrap.image-error {
+        background: linear-gradient(180deg, rgba(229, 222, 212, 0.9), rgba(206, 194, 180, 0.92));
+      }
+      .image-wrap.image-error::before {
+        content: "Image unavailable";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(24, 24, 27, 0.52);
       }
       .info {
         padding: 16px;
@@ -938,40 +995,34 @@ def match_carousel_resource() -> str:
         line-height: 1.5;
         color: var(--color-text-secondary, rgba(24, 24, 27, 0.78));
       }
-      .controls {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        margin-top: 14px;
-      }
-      .buttons {
-        display: flex;
-        gap: 8px;
-      }
-      button {
-        appearance: none;
-        border: none;
+      .swiper-button-next,
+      .swiper-button-prev {
+        width: 38px;
+        height: 38px;
+        margin-top: -19px;
         border-radius: 999px;
-        padding: 10px 14px;
-        background: rgba(17, 24, 39, 0.08);
-        color: inherit;
-        font: inherit;
+        background: rgba(255, 255, 255, 0.92);
+        color: rgba(24, 24, 27, 0.84);
+        box-shadow: 0 10px 24px rgba(17, 24, 39, 0.12);
       }
-      button:disabled {
-        opacity: 0.35;
+      .swiper-button-next::after,
+      .swiper-button-prev::after {
+        font-size: 15px;
+        font-weight: 700;
       }
-      .dots {
-        display: flex;
-        gap: 8px;
+      .swiper-button-disabled {
+        opacity: 0.22;
       }
-      .dot {
+      .swiper-pagination {
+        bottom: 2px !important;
+      }
+      .swiper-pagination-bullet {
         width: 8px;
         height: 8px;
-        border-radius: 999px;
+        opacity: 1;
         background: rgba(17, 24, 39, 0.18);
       }
-      .dot.active {
+      .swiper-pagination-bullet-active {
         background: rgba(17, 24, 39, 0.72);
       }
       .empty {
@@ -994,54 +1045,160 @@ def match_carousel_resource() -> str:
         <div class="summary" id="summary">The top dress matches will appear here with image cards.</div>
       </div>
       <div class="carousel">
-        <div class="frame">
-          <div class="track" id="track"></div>
+        <div class="swiper" id="match-swiper" hidden>
+          <div class="swiper-wrapper" id="track"></div>
+          <div class="swiper-button-prev" id="prev" aria-label="Previous match"></div>
+          <div class="swiper-button-next" id="next" aria-label="Next match"></div>
+          <div class="swiper-pagination" id="pagination"></div>
         </div>
         <div class="empty" id="empty">No dress cards yet.</div>
-        <div class="controls" id="controls" hidden>
-          <div class="dots" id="dots"></div>
-          <div class="buttons">
-            <button id="prev" type="button">Previous</button>
-            <button id="next" type="button">Next</button>
-          </div>
-        </div>
       </div>
     </div>
     <script type="module">
       import { App } from "https://cdn.jsdelivr.net/npm/@modelcontextprotocol/ext-apps@1.1.2/+esm";
+      import Swiper from "https://cdn.jsdelivr.net/npm/swiper@12/swiper-bundle.min.mjs";
 
       const state = {
-        activeIndex: 0,
         matches: [],
         analysis: null,
       };
+      let swiper = null;
+      const swiperRoot = document.getElementById("match-swiper");
       const track = document.getElementById("track");
-      const dots = document.getElementById("dots");
-      const controls = document.getElementById("controls");
+      const pagination = document.getElementById("pagination");
       const empty = document.getElementById("empty");
       const title = document.getElementById("title");
       const summary = document.getElementById("summary");
-      const prev = document.getElementById("prev");
-      const next = document.getElementById("next");
       const app = new App({
         name: "RetailNext Match Carousel",
-        version: "1.0.0",
+        version: "1.1.0",
       });
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function renderSlide(match) {
+        const primarySrc = match.thumbnail_data_url || match.image_url || "";
+        const fallbackSrc = match.image_url || "";
+        const fetchPriority = match.rank === 1 ? "high" : "auto";
+        return `
+          <article class="card swiper-slide">
+            <div class="image-wrap">
+              <img
+                src="${escapeHtml(primarySrc)}"
+                alt="${escapeHtml(match.product_name)}"
+                data-fallback-src="${escapeHtml(fallbackSrc)}"
+                loading="eager"
+                decoding="async"
+                fetchpriority="${fetchPriority}"
+              >
+            </div>
+            <div class="info">
+              <span class="rank">Top Match ${escapeHtml(match.rank)}</span>
+              <div class="name">${escapeHtml(match.product_name)}</div>
+              <div class="brand">${escapeHtml(match.brand)}</div>
+              <div class="meta">
+                <div class="meta-block">
+                  <span class="meta-label">Price</span>
+                  <span class="meta-value">$${escapeHtml(match.price)}</span>
+                </div>
+                <div class="meta-block">
+                  <span class="meta-label">Color</span>
+                  <span class="meta-value">${escapeHtml(match.color)}</span>
+                </div>
+                <div class="meta-block">
+                  <span class="meta-label">Occasion</span>
+                  <span class="meta-value">${escapeHtml(match.occasion)}</span>
+                </div>
+                <div class="meta-block">
+                  <span class="meta-label">Material</span>
+                  <span class="meta-value">${escapeHtml(match.material)}</span>
+                </div>
+              </div>
+              <div class="reason">${escapeHtml(match.match_reason || "")}</div>
+            </div>
+          </article>
+        `;
+      }
+
+      function wireImages() {
+        track.querySelectorAll("img").forEach((img) => {
+          const imageWrap = img.closest(".image-wrap");
+          if (!imageWrap) {
+            return;
+          }
+          img.addEventListener("load", () => {
+            imageWrap.classList.remove("image-error");
+            imageWrap.classList.add("loaded");
+          });
+          img.addEventListener("error", () => {
+            const fallbackSrc = img.dataset.fallbackSrc || "";
+            if (fallbackSrc && img.getAttribute("src") !== fallbackSrc) {
+              img.setAttribute("src", fallbackSrc);
+              return;
+            }
+            imageWrap.classList.remove("loaded");
+            imageWrap.classList.add("image-error");
+          });
+          if (img.complete && img.naturalWidth > 0) {
+            imageWrap.classList.add("loaded");
+          }
+        });
+      }
+
+      function destroySwiper() {
+        if (!swiper) {
+          return;
+        }
+        swiper.destroy(true, true);
+        swiper = null;
+      }
+
+      function ensureSwiper() {
+        if (swiper) {
+          swiper.update();
+          swiper.slideTo(0, 0);
+          return;
+        }
+        swiper = new Swiper(swiperRoot, {
+          speed: 320,
+          slidesPerView: 1,
+          spaceBetween: 16,
+          autoHeight: true,
+          keyboard: { enabled: true },
+          navigation: {
+            nextEl: "#next",
+            prevEl: "#prev",
+          },
+          pagination: {
+            el: pagination,
+            clickable: true,
+          },
+          observer: true,
+          observeParents: true,
+          watchOverflow: true,
+        });
+      }
 
       function render() {
         const total = state.matches.length;
         if (!total) {
-          track.style.transform = "translateX(0)";
+          destroySwiper();
           track.innerHTML = "";
-          dots.innerHTML = "";
-          controls.hidden = true;
+          swiperRoot.hidden = true;
           empty.hidden = false;
           title.textContent = "Waiting for dress matches";
           summary.textContent = "The top dress matches will appear here with image cards.";
           return;
         }
 
-        controls.hidden = false;
+        swiperRoot.hidden = false;
         empty.hidden = true;
         title.textContent = "Recommended gala dress matches";
         const analysis = state.analysis || {};
@@ -1053,68 +1210,17 @@ def match_carousel_resource() -> str:
             : null,
         ].filter(Boolean).join(" • ");
 
-        track.innerHTML = state.matches.map((match) => `
-          <article class="card">
-            <div class="image-wrap">
-              <img src="${match.image_url || ""}" alt="${match.product_name}" loading="eager">
-            </div>
-            <div class="info">
-              <span class="rank">Top Match ${match.rank}</span>
-              <div class="name">${match.product_name}</div>
-              <div class="brand">${match.brand}</div>
-              <div class="meta">
-                <div class="meta-block">
-                  <span class="meta-label">Price</span>
-                  <span class="meta-value">$${match.price}</span>
-                </div>
-                <div class="meta-block">
-                  <span class="meta-label">Color</span>
-                  <span class="meta-value">${match.color}</span>
-                </div>
-                <div class="meta-block">
-                  <span class="meta-label">Occasion</span>
-                  <span class="meta-value">${match.occasion}</span>
-                </div>
-                <div class="meta-block">
-                  <span class="meta-label">Material</span>
-                  <span class="meta-value">${match.material}</span>
-                </div>
-              </div>
-              <div class="reason">${match.match_reason || ""}</div>
-            </div>
-          </article>
-        `).join("");
-
-        dots.innerHTML = state.matches.map((_, index) => `
-          <span class="dot${index === state.activeIndex ? " active" : ""}"></span>
-        `).join("");
-
-        prev.disabled = state.activeIndex === 0;
-        next.disabled = state.activeIndex === total - 1;
-        track.style.transform = `translateX(-${state.activeIndex * 100}%)`;
+        track.innerHTML = state.matches.map(renderSlide).join("");
+        wireImages();
+        ensureSwiper();
       }
 
       function updateResult(params) {
         const structured = params && params.structuredContent ? params.structuredContent : {};
         state.analysis = structured.analysis || null;
         state.matches = Array.isArray(structured.matches) ? structured.matches : [];
-        state.activeIndex = 0;
         render();
       }
-
-      prev.addEventListener("click", () => {
-        if (state.activeIndex > 0) {
-          state.activeIndex -= 1;
-          render();
-        }
-      });
-
-      next.addEventListener("click", () => {
-        if (state.activeIndex < state.matches.length - 1) {
-          state.activeIndex += 1;
-          render();
-        }
-      });
 
       app.ontoolresult = (params) => {
         updateResult(params || {});
@@ -1376,7 +1482,11 @@ async def gallery(request: Request) -> HTMLResponse:
     for product_id in [item.strip() for item in product_ids.split(",") if item.strip()][:3]:
         product = get_product_by_id(product_id)
         if product:
-            products.append(_product_with_image_url(product))
+            enriched = _product_with_image_url(product)
+            thumbnail_data_url = _inline_thumbnail_data_url(product.get("image_path"))
+            if thumbnail_data_url:
+                enriched["thumbnail_data_url"] = thumbnail_data_url
+            products.append(enriched)
 
     if not products:
         return HTMLResponse(
@@ -1405,10 +1515,15 @@ async def gallery(request: Request) -> HTMLResponse:
     cards = []
     for rank, product in enumerate(products, start=1):
         image_html = ""
-        if product.get("image_url"):
+        primary_src = product.get("thumbnail_data_url") or product.get("image_url")
+        fallback_src = product.get("image_url") or ""
+        if primary_src:
             image_html = (
-                f'<img src="{escape(product["image_url"], quote=True)}" '
-                f'alt="{escape(product["product_name"], quote=True)}">'
+                f'<img src="{escape(primary_src, quote=True)}" '
+                f'alt="{escape(product["product_name"], quote=True)}" '
+                f'data-fallback-src="{escape(fallback_src, quote=True)}" '
+                f'loading="eager" decoding="async" '
+                f'fetchpriority="{"high" if rank == 1 else "auto"}">'
             )
         cards.append(
             """
@@ -1487,14 +1602,47 @@ async def gallery(request: Request) -> HTMLResponse:
         box-shadow: 0 18px 40px rgba(24, 24, 27, 0.08);
       }
       .image-wrap {
+        position: relative;
         aspect-ratio: 4 / 5;
         background: linear-gradient(180deg, rgba(214, 188, 155, 0.18), rgba(17, 24, 39, 0.08));
+      }
+      .image-wrap::after {
+        content: "Loading image";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(24, 24, 27, 0.5);
+        background: linear-gradient(180deg, rgba(236, 231, 223, 0.96), rgba(228, 220, 210, 0.92));
+      }
+      .image-wrap.loaded::after,
+      .image-wrap.image-error::after {
+        display: none;
       }
       .image-wrap img {
         width: 100%;
         height: 100%;
         object-fit: cover;
         display: block;
+        opacity: 0;
+        transition: opacity 140ms ease;
+      }
+      .image-wrap.loaded img {
+        opacity: 1;
+      }
+      .image-wrap.image-error::before {
+        content: "Image unavailable";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(24, 24, 27, 0.52);
       }
       .body {
         padding: 18px 18px 20px;
@@ -1533,6 +1681,30 @@ async def gallery(request: Request) -> HTMLResponse:
         __CARDS__
       </section>
     </main>
+    <script>
+      document.querySelectorAll("img[data-fallback-src]").forEach((img) => {
+        const imageWrap = img.closest(".image-wrap");
+        if (!imageWrap) {
+          return;
+        }
+        img.addEventListener("load", () => {
+          imageWrap.classList.remove("image-error");
+          imageWrap.classList.add("loaded");
+        });
+        img.addEventListener("error", () => {
+          const fallbackSrc = img.dataset.fallbackSrc || "";
+          if (fallbackSrc && img.getAttribute("src") !== fallbackSrc) {
+            img.setAttribute("src", fallbackSrc);
+            return;
+          }
+          imageWrap.classList.remove("loaded");
+          imageWrap.classList.add("image-error");
+        });
+        if (img.complete && img.naturalWidth > 0) {
+          imageWrap.classList.add("loaded");
+        }
+      });
+    </script>
   </body>
 </html>"""
     return HTMLResponse(html.replace("__CARDS__", "".join(cards)))
