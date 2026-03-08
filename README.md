@@ -2,6 +2,8 @@
 
 This is a Streamlit app for a luxury retail associate workflow.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/enoshneupane/retaildemo)
+
 ## Requirements
 
 - Python 3.11
