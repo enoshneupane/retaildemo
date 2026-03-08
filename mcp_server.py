@@ -76,7 +76,10 @@ mcp = FastMCP(
         "ChatGPT, inspect the image yourself and call find_matching_products_from_chat_image with the "
         "dress attributes you observe. Use the filename-based image tools only for backend-known demo files "
         "such as gala_inspiration.jpg. Guide the associate one step at a time: first the dress match, then "
-        "inventory or alternate color, then styling add-ons, then hold preparation if requested."
+        "availability, then styling add-ons, then hold preparation if requested. When the associate asks "
+        "if a matched dress is available, or asks for availability, use check_dress_availability by default. "
+        "That tool checks live inventory first and also surfaces today's inbound back-office options so the "
+        "conversation naturally continues if the client wants another color."
     ),
 )
 
@@ -301,6 +304,132 @@ def _outfit_response(result: dict[str, Any]) -> dict[str, Any]:
         **result,
         "anchor_product": _product_with_image_url(get_product_by_id(result["anchor_product_id"])),
         "recommendations": _products_with_image_urls(result["recommendations"]),
+    }
+
+
+def _availability_story(
+    anchor_product_id: str,
+    occasion: str,
+    preferred_size: str,
+    nearby_stores: list[str],
+) -> dict[str, Any]:
+    anchor_product = _product_with_image_url(get_product_by_id(anchor_product_id))
+    inventory_result = check_inventory(
+        product_id=anchor_product_id,
+        preferred_size=preferred_size,
+        nearby_stores=nearby_stores,
+    )
+    same_product_shipments = check_back_office_shipments(
+        product_id=anchor_product_id,
+        preferred_size=preferred_size,
+        nearby_stores=nearby_stores,
+    )
+
+    alternate_candidates = get_back_office_color_candidates(
+        anchor_product=get_product_by_id(anchor_product_id),
+        occasion=occasion,
+        preferred_size=preferred_size,
+        nearby_stores=nearby_stores,
+    )
+    alternate_options = []
+    for candidate in alternate_candidates:
+        alternate_options.append(
+            {
+                **_product_with_image_url(candidate),
+                "back_office_shipments": check_back_office_shipments(
+                    product_id=candidate["product_id"],
+                    preferred_size=preferred_size,
+                    nearby_stores=nearby_stores,
+                )["shipments"],
+            }
+        )
+
+    live_matches = [
+        record
+        for record in inventory_result["inventory"]
+        if record["preferred_size_match"] and record["quantity"] > 0
+    ]
+    same_product_ready = [
+        shipment
+        for shipment in same_product_shipments["shipments"]
+        if shipment["preferred_size_match"]
+        and shipment["quantity"] > 0
+        and shipment["shipment_status"] == "Received in back office"
+    ]
+    alternate_ready = []
+    for option in alternate_options:
+        ready_shipments = [
+            shipment
+            for shipment in option["back_office_shipments"]
+            if shipment["preferred_size_match"]
+            and shipment["quantity"] > 0
+            and shipment["shipment_status"] == "Received in back office"
+        ]
+        if ready_shipments:
+            alternate_ready.append(
+                {
+                    "product_id": option["product_id"],
+                    "product_name": option["product_name"],
+                    "color": option["color"],
+                    "store_name": ready_shipments[0]["store_name"],
+                    "invoice_id": ready_shipments[0]["invoice_id"],
+                    "shipped_date": ready_shipments[0]["shipped_date"],
+                }
+            )
+
+    guidance_parts = []
+    recommended_next_step = "offer_inventory"
+    if live_matches:
+        top_live = live_matches[0]
+        guidance_parts.append(
+            f"{anchor_product['product_name']} is available now in size {preferred_size} at "
+            f"{top_live['store_name']}."
+        )
+        recommended_next_step = "offer_live_hold_or_alternate_color"
+    elif same_product_ready:
+        top_same_product = same_product_ready[0]
+        guidance_parts.append(
+            f"{anchor_product['product_name']} is not on the floor, but a size {preferred_size} unit from "
+            f"today's invoice is already received in the {top_same_product['store_name']} back office."
+        )
+        recommended_next_step = "verify_same_product_back_office"
+    else:
+        guidance_parts.append(
+            f"No live size {preferred_size} floor inventory is available nearby for {anchor_product['product_name']}."
+        )
+
+    if alternate_ready:
+        top_alternate = alternate_ready[0]
+        guidance_parts.append(
+            f"If the client wants another color, the {top_alternate['color'].lower()} option arrived today "
+            f"and is already in the {top_alternate['store_name']} back office."
+        )
+        if recommended_next_step == "offer_inventory":
+            recommended_next_step = "offer_alternate_color_back_office"
+
+    if not alternate_ready and alternate_options:
+        top_alternate = alternate_options[0]
+        shipments = top_alternate["back_office_shipments"]
+        if shipments:
+            top_shipment = shipments[0]
+            guidance_parts.append(
+                f"If the client wants another color, the {top_alternate['color'].lower()} option was invoiced "
+                f"today for {top_shipment['store_name']}."
+            )
+
+    return {
+        "status": "success",
+        "anchor_product": anchor_product,
+        "preferred_size": preferred_size,
+        "occasion": occasion,
+        "inventory": inventory_result["inventory"],
+        "same_product_back_office_shipments": same_product_shipments["shipments"],
+        "alternate_back_office_options": alternate_options,
+        "live_inventory_available": bool(live_matches),
+        "same_product_back_office_available": bool(same_product_ready),
+        "alternate_back_office_available": bool(alternate_ready),
+        "recommended_next_step": recommended_next_step,
+        "assistant_guidance": " ".join(guidance_parts),
     }
 
 
@@ -1322,7 +1451,11 @@ def search_products_by_attributes(
 
 
 @mcp.tool(
-    description="Check nearby store inventory for a product and preferred size.",
+    description=(
+        "Check live floor inventory only for a product and preferred size. Prefer check_dress_availability "
+        "when the associate asks whether a matched dress is available, because it also includes today's "
+        "back-office and inbound options."
+    ),
     annotations=READ_ONLY_TOOL,
 )
 def check_store_inventory(
@@ -1332,6 +1465,28 @@ def check_store_inventory(
 ) -> dict[str, Any]:
     return check_inventory(
         product_id=product_id,
+        preferred_size=preferred_size,
+        nearby_stores=_stores(nearby_stores),
+    )
+
+
+@mcp.tool(
+    description=(
+        "Use this by default when the associate asks whether a matched dress is available. It checks live "
+        "nearby inventory first, then same-day back-office/inbound units and alternate-color options so the "
+        "assistant can continue the sales flow naturally."
+    ),
+    annotations=READ_ONLY_TOOL,
+)
+def check_dress_availability(
+    anchor_product_id: str,
+    occasion: str,
+    preferred_size: str = PREFERRED_SIZE,
+    nearby_stores: list[str] | None = None,
+) -> dict[str, Any]:
+    return _availability_story(
+        anchor_product_id=anchor_product_id,
+        occasion=occasion,
         preferred_size=preferred_size,
         nearby_stores=_stores(nearby_stores),
     )
