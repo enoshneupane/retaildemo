@@ -1731,6 +1731,19 @@ def verify_back_office_availability(
     )
 
 
+# Keep the public MCP app narrow for the recorded demo so ChatGPT has fewer branches.
+for tool_name in (
+    "analyze_inspiration_photo",
+    "search_products_by_attributes",
+    "check_store_inventory",
+    "check_alternate_color_back_office",
+):
+    try:
+        mcp.local_provider.remove_tool(tool_name)
+    except Exception:
+        pass
+
+
 mcp_app = mcp.http_app(path=MCP_PATH, transport="streamable-http")
 
 
