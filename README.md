@@ -28,6 +28,7 @@ python -m streamlit run app.py
 This repo also includes a remote-ready MCP server for ChatGPT in `mcp_server.py`.
 
 For ChatGPT uploads, the model should inspect the uploaded dress image and call the chat-image matching tool. The MCP server itself does not read chat attachments directly.
+The dress-match tools now expose a ChatGPT app view that renders the recommended dresses as an image card carousel with product details.
 
 Run it locally for testing:
 
