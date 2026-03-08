@@ -307,6 +307,39 @@ def _outfit_response(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _alternate_color_cards(
+    anchor_product: dict[str, Any],
+    occasion: str,
+    requested_color: str | None,
+    alternates: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    requested = str(requested_color or "").strip()
+    label = requested or "Alternate color"
+    analysis = {
+        "color": label,
+        "occasion": occasion,
+        "style_tags": ["alternate color", "today's inbound"],
+        "gallery_title": f"{label} options from today's inbound",
+        "gallery_summary": (
+            f"Showing only {label.lower()} options for {anchor_product['product_name']} that were "
+            "invoiced today or are already in the back office."
+        ),
+    }
+    cards = []
+    for rank, alternate in enumerate(alternates[:3], start=1):
+        enriched = _product_with_image_url(alternate)
+        cards.append(
+            {
+                **enriched,
+                "rank": rank,
+                "match_reason": (
+                    f"{enriched['color']} option located through today's inbound or back-office flow."
+                ),
+            }
+        )
+    return analysis, cards
+
+
 def _availability_story(
     anchor_product_id: str,
     occasion: str,
@@ -1317,27 +1350,31 @@ def match_carousel_resource() -> str:
 
       function render() {
         const total = state.matches.length;
+        const analysis = state.analysis || {};
         if (!total) {
           destroySwiper();
           track.innerHTML = "";
           swiperRoot.hidden = true;
           empty.hidden = false;
-          title.textContent = "Waiting for dress matches";
-          summary.textContent = "The top dress matches will appear here with image cards.";
+          empty.textContent = analysis.gallery_title
+            ? "No options matched this color request."
+            : "No dress cards yet.";
+          title.textContent = analysis.gallery_title || "Waiting for dress matches";
+          summary.textContent = analysis.gallery_summary || "The top dress matches will appear here with image cards.";
           return;
         }
 
         swiperRoot.hidden = false;
         empty.hidden = true;
-        title.textContent = "Recommended gala dress matches";
-        const analysis = state.analysis || {};
-        summary.textContent = [
+        title.textContent = analysis.gallery_title || "Recommended gala dress matches";
+        const defaultSummary = [
           analysis.color ? analysis.color + " palette" : null,
           analysis.occasion ? analysis.occasion + " dress code" : null,
           Array.isArray(analysis.style_tags) && analysis.style_tags.length
             ? analysis.style_tags.slice(0, 3).join(", ")
             : null,
         ].filter(Boolean).join(" • ");
+        summary.textContent = analysis.gallery_summary || defaultSummary;
 
         track.innerHTML = state.matches.map(renderSlide).join("");
         wireImages();
@@ -1495,9 +1532,12 @@ def check_dress_availability(
 @mcp.tool(
     description=(
         "Find alternate color options for the matched product that are not yet on the floor but were invoiced "
-        "and shipped today, with back-office shipment details."
+        "and shipped today, with back-office shipment details. If requested_color is provided, show only that "
+        "color in the gallery."
     ),
     annotations=READ_ONLY_TOOL,
+    app=AppConfig(resource_uri=MATCH_CAROUSEL_URI, prefers_border=True),
+    meta=OPENAI_TOOL_UI_META,
 )
 def check_alternate_color_back_office(
     anchor_product_id: str,
@@ -1523,28 +1563,46 @@ def check_alternate_color_back_office(
         ]
 
     if not candidates:
+        analysis, cards = _alternate_color_cards(
+            anchor_product=anchor_product,
+            occasion=occasion,
+            requested_color=requested_color,
+            alternates=[],
+        )
         return {
             "status": "not_found",
-            "anchor_product": anchor_product,
+            "anchor_product": _product_with_image_url(anchor_product),
             "requested_color": requested_color,
+            "analysis": analysis,
+            "matches": cards,
+            "alternates": [],
             "message": "No invoiced alternate-color back-office units found for this request.",
         }
 
+    alternates = [
+        {
+            **_product_with_image_url(candidate),
+            "back_office_shipments": check_back_office_shipments(
+                product_id=candidate["product_id"],
+                preferred_size=preferred_size,
+                nearby_stores=stores,
+            )["shipments"],
+        }
+        for candidate in candidates
+    ]
+    analysis, cards = _alternate_color_cards(
+        anchor_product=anchor_product,
+        occasion=occasion,
+        requested_color=requested_color,
+        alternates=alternates,
+    )
     return {
         "status": "success",
-        "anchor_product": anchor_product,
+        "anchor_product": _product_with_image_url(anchor_product),
         "requested_color": requested_color,
-        "alternates": [
-            {
-                **candidate,
-                "back_office_shipments": check_back_office_shipments(
-                    product_id=candidate["product_id"],
-                    preferred_size=preferred_size,
-                    nearby_stores=stores,
-                )["shipments"],
-            }
-            for candidate in candidates
-        ],
+        "analysis": analysis,
+        "matches": cards,
+        "alternates": alternates,
     }
 
 
