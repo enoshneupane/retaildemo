@@ -58,10 +58,13 @@ COLOR_ALIASES = {
     "golden": "Champagne",
     "green": "Emerald",
     "ivory": "Champagne",
+    "light yellow": "Champagne",
+    "light-yellow": "Champagne",
     "metallic": "Silver",
     "pearl": "Pearl",
     "silver": "Silver",
     "white": "Pearl",
+    "yellow": "Champagne",
 }
 
 
