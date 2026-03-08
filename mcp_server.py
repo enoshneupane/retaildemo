@@ -79,7 +79,9 @@ mcp = FastMCP(
         "availability, then styling add-ons, then hold preparation if requested. When the associate asks "
         "if a matched dress is available, or asks for availability, use check_dress_availability by default. "
         "That tool checks live inventory first and also surfaces today's inbound back-office options so the "
-        "conversation naturally continues if the client wants another color."
+        "conversation naturally continues if the client wants another color. If the associate asks for a "
+        "specific alternate color, pass requested_color so the gallery swaps to that single color instead of "
+        "showing the original match set."
     ),
 )
 
@@ -356,8 +358,10 @@ def _availability_story(
     occasion: str,
     preferred_size: str,
     nearby_stores: list[str],
+    requested_color: str | None = None,
 ) -> dict[str, Any]:
     anchor_product = _product_with_image_url(get_product_by_id(anchor_product_id))
+    normalized_requested_color = _normalize_requested_color(requested_color)
     inventory_result = check_inventory(
         product_id=anchor_product_id,
         preferred_size=preferred_size,
@@ -387,6 +391,19 @@ def _availability_story(
                 )["shipments"],
             }
         )
+
+    if normalized_requested_color == "Champagne":
+        alternate_options = [
+            option
+            for option in alternate_options
+            if option["product_id"] == "RN2006" or option["color"].lower() == "champagne"
+        ]
+    elif normalized_requested_color:
+        alternate_options = [
+            option
+            for option in alternate_options
+            if option["color"].lower() == normalized_requested_color.lower()
+        ]
 
     live_matches = [
         record
@@ -423,7 +440,38 @@ def _availability_story(
 
     guidance_parts = []
     recommended_next_step = "offer_inventory"
-    if live_matches:
+    analysis = None
+    matches: list[dict[str, Any]] = []
+    if normalized_requested_color:
+        display_options = (
+            alternate_options[:1] if normalized_requested_color == "Champagne" else alternate_options
+        )
+        analysis, matches = _alternate_color_cards(
+            anchor_product=get_product_by_id(anchor_product_id),
+            occasion=occasion,
+            requested_color=normalized_requested_color,
+            alternates=display_options,
+        )
+        recommended_next_step = "offer_alternate_color_back_office"
+        if alternate_ready:
+            top_alternate = alternate_ready[0]
+            guidance_parts.append(
+                f"The {top_alternate['color'].lower()} option is available through today's inbound flow and "
+                f"is already in the {top_alternate['store_name']} back office."
+            )
+        elif alternate_options:
+            top_alternate = alternate_options[0]
+            shipments = top_alternate["back_office_shipments"]
+            if shipments:
+                guidance_parts.append(
+                    f"The {top_alternate['color'].lower()} option was invoiced today for "
+                    f"{shipments[0]['store_name']}."
+                )
+        else:
+            guidance_parts.append(
+                f"No {normalized_requested_color.lower()} option is available from today's inbound or back-office flow."
+            )
+    elif live_matches:
         top_live = live_matches[0]
         guidance_parts.append(
             f"{anchor_product['product_name']} is available now in size {preferred_size} at "
@@ -442,7 +490,7 @@ def _availability_story(
             f"No live size {preferred_size} floor inventory is available nearby for {anchor_product['product_name']}."
         )
 
-    if alternate_ready:
+    if not normalized_requested_color and alternate_ready:
         top_alternate = alternate_ready[0]
         guidance_parts.append(
             f"If the client wants another color, the {top_alternate['color'].lower()} option arrived today "
@@ -451,7 +499,7 @@ def _availability_story(
         if recommended_next_step == "offer_inventory":
             recommended_next_step = "offer_alternate_color_back_office"
 
-    if not alternate_ready and alternate_options:
+    if not normalized_requested_color and not alternate_ready and alternate_options:
         top_alternate = alternate_options[0]
         shipments = top_alternate["back_office_shipments"]
         if shipments:
@@ -466,6 +514,7 @@ def _availability_story(
         "anchor_product": anchor_product,
         "preferred_size": preferred_size,
         "occasion": occasion,
+        "requested_color": normalized_requested_color or requested_color,
         "inventory": inventory_result["inventory"],
         "same_product_back_office_shipments": same_product_shipments["shipments"],
         "alternate_back_office_options": alternate_options,
@@ -473,6 +522,8 @@ def _availability_story(
         "same_product_back_office_available": bool(same_product_ready),
         "alternate_back_office_available": bool(alternate_ready),
         "recommended_next_step": recommended_next_step,
+        "analysis": analysis,
+        "matches": matches,
         "assistant_guidance": " ".join(guidance_parts),
     }
 
@@ -1522,20 +1573,25 @@ def check_store_inventory(
     description=(
         "Use this by default when the associate asks whether a matched dress is available. It checks live "
         "nearby inventory first, then same-day back-office/inbound units and alternate-color options so the "
-        "assistant can continue the sales flow naturally."
+        "assistant can continue the sales flow naturally. If requested_color is provided, show only that color "
+        "in the gallery, and for yellow or champagne requests pin to the Champagne Wrap Gown."
     ),
     annotations=READ_ONLY_TOOL,
+    app=AppConfig(resource_uri=MATCH_CAROUSEL_URI, prefers_border=True),
+    meta=OPENAI_TOOL_UI_META,
 )
 def check_dress_availability(
     anchor_product_id: str,
     occasion: str,
     preferred_size: str = PREFERRED_SIZE,
+    requested_color: str | None = None,
     nearby_stores: list[str] | None = None,
 ) -> dict[str, Any]:
     return _availability_story(
         anchor_product_id=anchor_product_id,
         occasion=occasion,
         preferred_size=preferred_size,
+        requested_color=requested_color,
         nearby_stores=_stores(nearby_stores),
     )
 
