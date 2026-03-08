@@ -10,8 +10,9 @@ from fastmcp.utilities.types import Image
 from mcp.types import TextContent
 from PIL import Image as PILImage
 import uvicorn
+from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from retail_logic import (
     BASE_DIR,
@@ -93,6 +94,10 @@ def _product_with_image_url(product: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(product)
     enriched["image_url"] = _image_url(product.get("image_path"))
     return enriched
+
+
+def _products_with_image_urls(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_product_with_image_url(product) for product in products]
 
 
 def _local_image_path(image_path: str | None) -> str | None:
@@ -201,6 +206,556 @@ def _match_tool_result(analysis: dict[str, Any], matches: list[dict[str, Any]]) 
             "matches": cards,
         },
     )
+
+
+def _match_response(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "status": "success",
+        "analysis": analysis,
+        "matches": _carousel_matches(analysis, matches),
+    }
+
+
+def _inventory_response(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **result,
+        "product": _product_with_image_url(get_product_by_id(result["product_id"])),
+    }
+
+
+def _alternate_color_response(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("status") != "success":
+        return result
+
+    alternates = []
+    for alternate in result["alternates"]:
+        enriched = _product_with_image_url(alternate)
+        alternates.append(enriched)
+
+    return {
+        **result,
+        "anchor_product": _product_with_image_url(result["anchor_product"]),
+        "alternates": alternates,
+    }
+
+
+def _outfit_response(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("status") != "success":
+        return result
+
+    return {
+        **result,
+        "anchor_product": _product_with_image_url(get_product_by_id(result["anchor_product_id"])),
+        "recommendations": _products_with_image_urls(result["recommendations"]),
+    }
+
+
+async def _json_payload(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _bad_request(message: str) -> JSONResponse:
+    return JSONResponse({"status": "error", "message": message}, status_code=400)
+
+
+def _openapi_spec(base_url: str) -> dict[str, Any]:
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "RetailNext Luxury Assistant Actions API",
+            "version": "1.0.0",
+            "description": (
+                "API for a luxury retail associate workflow: match a customer inspiration look to the top 3 dresses, "
+                "check nearby inventory, verify alternate colors from inbound shipments, suggest styling add-ons, "
+                "and prepare pickup holds."
+            ),
+        },
+        "servers": [{"url": base_url}],
+        "paths": {
+            "/api/match-from-style-brief": {
+                "post": {
+                    "operationId": "matchFromStyleBrief",
+                    "summary": "Match top 3 dresses from a style brief",
+                    "description": (
+                        "Use after visually inspecting the customer's uploaded dress image. Always return the top 3 dress matches."
+                    ),
+                    "x-openai-isConsequential": False,
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/MatchFromStyleBriefRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Top 3 dress matches",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/MatchResponse"}
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/match-from-demo-photo": {
+                "post": {
+                    "operationId": "matchFromDemoPhoto",
+                    "summary": "Run the built-in gala demo photo flow",
+                    "description": "Use the known demo filename such as gala_inspiration.jpg and return the top 3 dress matches.",
+                    "x-openai-isConsequential": False,
+                    "requestBody": {
+                        "required": False,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/MatchFromDemoPhotoRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Top 3 dress matches from the demo photo",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/MatchResponse"}
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/check-inventory": {
+                "post": {
+                    "operationId": "checkInventory",
+                    "summary": "Check nearby store inventory",
+                    "description": "Check nearby live inventory for a selected dress and preferred size.",
+                    "x-openai-isConsequential": False,
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/CheckInventoryRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Inventory results",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/InventoryResponse"}
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/check-alternate-color": {
+                "post": {
+                    "operationId": "checkAlternateColor",
+                    "summary": "Check back-office alternate colors",
+                    "description": (
+                        "Check whether another dress color was invoiced and shipped today even if it is not yet on the sales floor."
+                    ),
+                    "x-openai-isConsequential": False,
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/CheckAlternateColorRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Alternate color and back-office shipment details",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/AlternateColorResponse"}
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/build-outfit": {
+                "post": {
+                    "operationId": "buildOutfit",
+                    "summary": "Suggest complementary add-ons",
+                    "description": "Recommend accessories that complement the selected dress.",
+                    "x-openai-isConsequential": False,
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/BuildOutfitRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Accessory recommendations",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/BuildOutfitResponse"}
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/reserve-pickup": {
+                "post": {
+                    "operationId": "reservePickup",
+                    "summary": "Reserve an in-stock item for pickup",
+                    "description": "Create a store pickup hold for a confirmed in-stock item.",
+                    "x-openai-isConsequential": True,
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/ReservePickupRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Reservation confirmation",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/ConfirmationResponse"}
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/verify-back-office": {
+                "post": {
+                    "operationId": "verifyBackOffice",
+                    "summary": "Verify an inbound back-office item",
+                    "description": "Confirm a just-shipped alternate color is in the back office and prepare it for the customer.",
+                    "x-openai-isConsequential": True,
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/VerifyBackOfficeRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Verification confirmation",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/ConfirmationResponse"}
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+        },
+        "components": {
+            "schemas": {
+                "MatchFromStyleBriefRequest": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["category", "occasion", "color", "style_tags"],
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Observed dress category, for example gown, evening dress, or cocktail dress.",
+                        },
+                        "occasion": {
+                            "type": "string",
+                            "description": "Observed event context, for example gala, formal, black tie, or cocktail.",
+                        },
+                        "color": {
+                            "type": "string",
+                            "description": "Primary observed color such as black, emerald, silver, or champagne.",
+                        },
+                        "style_tags": {
+                            "type": "array",
+                            "description": "Short style cues observed from the dress image.",
+                            "items": {"type": "string"},
+                        },
+                        "visual_summary": {
+                            "type": "string",
+                            "description": "One concise summary sentence describing the uploaded dress image.",
+                        },
+                    },
+                },
+                "MatchFromDemoPhotoRequest": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "file_name": {
+                            "type": "string",
+                            "description": "Known demo photo filename. Defaults to gala_inspiration.jpg.",
+                            "default": "gala_inspiration.jpg",
+                        }
+                    },
+                },
+                "CheckInventoryRequest": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["product_id"],
+                    "properties": {
+                        "product_id": {"type": "string"},
+                        "preferred_size": {"type": "string", "default": "6"},
+                        "nearby_stores": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional nearby stores in priority order.",
+                        },
+                    },
+                },
+                "CheckAlternateColorRequest": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["anchor_product_id", "occasion"],
+                    "properties": {
+                        "anchor_product_id": {"type": "string"},
+                        "occasion": {"type": "string"},
+                        "requested_color": {"type": "string"},
+                        "preferred_size": {"type": "string", "default": "6"},
+                        "nearby_stores": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                },
+                "BuildOutfitRequest": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["anchor_product_id", "occasion"],
+                    "properties": {
+                        "anchor_product_id": {"type": "string"},
+                        "occasion": {"type": "string"},
+                    },
+                },
+                "ReservePickupRequest": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["product_id", "store_name", "size", "customer_name"],
+                    "properties": {
+                        "product_id": {"type": "string"},
+                        "store_name": {"type": "string"},
+                        "size": {"type": "string"},
+                        "customer_name": {"type": "string"},
+                    },
+                },
+                "VerifyBackOfficeRequest": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "product_id",
+                        "store_name",
+                        "size",
+                        "customer_name",
+                        "invoice_id",
+                        "shipped_date",
+                    ],
+                    "properties": {
+                        "product_id": {"type": "string"},
+                        "store_name": {"type": "string"},
+                        "size": {"type": "string"},
+                        "customer_name": {"type": "string"},
+                        "invoice_id": {"type": "string"},
+                        "shipped_date": {"type": "string"},
+                    },
+                },
+                "ProductMatch": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "product_id": {"type": "string"},
+                        "product_name": {"type": "string"},
+                        "brand": {"type": "string"},
+                        "price": {"type": "integer"},
+                        "color": {"type": "string"},
+                        "occasion": {"type": "string"},
+                        "material": {"type": "string"},
+                        "image_url": {"type": "string"},
+                        "match_reason": {"type": "string"},
+                        "rank": {"type": "integer"},
+                    },
+                },
+                "MatchResponse": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "status": {"type": "string"},
+                        "analysis": {"type": "object", "additionalProperties": True},
+                        "matches": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/ProductMatch"},
+                        },
+                    },
+                },
+                "InventoryRecord": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "store_name": {"type": "string"},
+                        "size": {"type": "string"},
+                        "quantity": {"type": "integer"},
+                        "pickup_available": {"type": "boolean"},
+                        "reserve_eligible": {"type": "boolean"},
+                        "preferred_size_match": {"type": "boolean"},
+                    },
+                },
+                "InventoryResponse": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "status": {"type": "string"},
+                        "product_id": {"type": "string"},
+                        "preferred_size": {"type": "string"},
+                        "product": {"type": "object", "additionalProperties": True},
+                        "inventory": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/InventoryRecord"},
+                        },
+                    },
+                },
+                "ShipmentRecord": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "invoice_id": {"type": "string"},
+                        "store_name": {"type": "string"},
+                        "size": {"type": "string"},
+                        "quantity": {"type": "integer"},
+                        "invoice_status": {"type": "string"},
+                        "shipment_status": {"type": "string"},
+                        "shipped_date": {"type": "string"},
+                        "eta_window": {"type": "string"},
+                        "associate_note": {"type": "string"},
+                    },
+                },
+                "AlternateProduct": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "product_id": {"type": "string"},
+                        "product_name": {"type": "string"},
+                        "brand": {"type": "string"},
+                        "price": {"type": "integer"},
+                        "color": {"type": "string"},
+                        "image_url": {"type": "string"},
+                        "back_office_shipments": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/ShipmentRecord"},
+                        },
+                    },
+                },
+                "AlternateColorResponse": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "status": {"type": "string"},
+                        "requested_color": {"type": "string"},
+                        "anchor_product": {"type": "object", "additionalProperties": True},
+                        "alternates": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/AlternateProduct"},
+                        },
+                    },
+                },
+                "BuildOutfitResponse": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "status": {"type": "string"},
+                        "anchor_product_id": {"type": "string"},
+                        "anchor_product_name": {"type": "string"},
+                        "anchor_product": {"type": "object", "additionalProperties": True},
+                        "recommendations": {
+                            "type": "array",
+                            "items": {"type": "object", "additionalProperties": True},
+                        },
+                    },
+                },
+                "ConfirmationResponse": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "status": {"type": "string"},
+                        "reservation_id": {"type": "string"},
+                        "invoice_id": {"type": "string"},
+                        "customer_name": {"type": "string"},
+                        "product_id": {"type": "string"},
+                        "reserved_item": {"type": "string"},
+                        "verified_item": {"type": "string"},
+                        "store_name": {"type": "string"},
+                        "size": {"type": "string"},
+                        "pickup_window": {"type": "string"},
+                        "associate_note": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+
+
+PRIVACY_POLICY_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RetailNext Privacy Policy</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px auto; max-width: 720px; padding: 0 20px; line-height: 1.6; color: #111827; }
+      h1, h2 { line-height: 1.2; }
+    </style>
+  </head>
+  <body>
+    <h1>RetailNext Luxury Assistant Privacy Policy</h1>
+    <p>This service is used to support a luxury retail styling workflow. It accepts styling attributes and retail workflow inputs in order to return dress matches, inventory checks, alternate-color shipment lookups, styling recommendations, and reservation confirmations.</p>
+    <h2>Data used</h2>
+    <p>The service processes the request fields sent by ChatGPT, such as dress attributes, product identifiers, preferred size, store name, customer name, and related workflow details. For demo use, these requests are handled against static sample retail data in this application.</p>
+    <h2>Data sharing</h2>
+    <p>This demo service does not sell user data. Data is used only to fulfill the retail workflow requests sent to the API.</p>
+    <h2>Retention</h2>
+    <p>Logs and hosting telemetry may be retained by the hosting provider for operational purposes. Update this policy before production use if you add databases, analytics, or third-party services.</p>
+    <h2>Contact</h2>
+    <p>Contact the operator of this GPT for questions about this demo deployment.</p>
+  </body>
+</html>
+"""
+
+
+GPT_ACTION_INSTRUCTIONS = """You are RetailNext Luxury Assistant, a luxury retail associate copilot for women's gala and eveningwear.
+
+When a customer uploads a dress image, inspect the image yourself and then call `matchFromStyleBrief`. Do not ask the API to inspect the file for you.
+
+Flow:
+1. Start with top 3 dress matches only.
+2. Show the dress images and key details first.
+3. After the matches, ask whether the associate wants nearby inventory or a different color.
+4. If the customer asks for another color, call `checkAlternateColor`.
+5. Offer add-ons only after the dress direction is clear.
+6. Only call reservation or back-office verification after the associate confirms.
+
+Tone:
+- concise
+- polished
+- associate-facing
+- never overwhelm the customer
+
+If there is an uploaded dress image, summarize the observed silhouette, occasion, color, and style cues before calling `matchFromStyleBrief`.
+"""
 
 
 @mcp.resource(
@@ -751,6 +1306,8 @@ async def root(_: Any) -> JSONResponse:
             "status": "ok",
             "mcp_path": MCP_PATH,
             "health_path": "/health",
+            "openapi_path": "/openapi.json",
+            "privacy_path": "/privacy",
         }
     )
 
@@ -759,10 +1316,151 @@ async def health(_: Any) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+async def openapi(_: Request) -> JSONResponse:
+    return JSONResponse(_openapi_spec(PUBLIC_BASE_URL))
+
+
+async def privacy(_: Request) -> HTMLResponse:
+    return HTMLResponse(PRIVACY_POLICY_HTML)
+
+
+async def gpt_instructions(_: Request) -> PlainTextResponse:
+    return PlainTextResponse(GPT_ACTION_INSTRUCTIONS)
+
+
+async def api_match_from_style_brief(request: Request) -> JSONResponse:
+    payload = await _json_payload(request)
+    required = ["category", "occasion", "color", "style_tags"]
+    missing = [field for field in required if field not in payload]
+    if missing:
+        return _bad_request(f"Missing required fields: {', '.join(missing)}")
+
+    result = match_products_from_style_brief(
+        category=str(payload["category"]),
+        occasion=str(payload["occasion"]),
+        color=str(payload["color"]),
+        style_tags=list(payload["style_tags"]),
+        visual_summary=payload.get("visual_summary"),
+    )
+    return JSONResponse(_match_response(result["analysis"], result["matches"]))
+
+
+async def api_match_from_demo_photo(request: Request) -> JSONResponse:
+    payload = await _json_payload(request)
+    file_name = str(payload.get("file_name", "gala_inspiration.jpg"))
+    analysis = analyze_uploaded_photo(file_name)
+    if analysis.get("status") != "success":
+        return JSONResponse(analysis, status_code=404)
+
+    matches = search_products(
+        category=analysis["category"],
+        occasion=analysis["occasion"],
+        color=analysis["color"],
+        style_tags=analysis["style_tags"],
+    )
+    return JSONResponse(_match_response(analysis, matches["results"]))
+
+
+async def api_check_inventory(request: Request) -> JSONResponse:
+    payload = await _json_payload(request)
+    product_id = payload.get("product_id")
+    if not product_id:
+        return _bad_request("Missing required field: product_id")
+
+    result = check_inventory(
+        product_id=str(product_id),
+        preferred_size=str(payload.get("preferred_size", PREFERRED_SIZE)),
+        nearby_stores=_stores(payload.get("nearby_stores")),
+    )
+    return JSONResponse(_inventory_response(result))
+
+
+async def api_check_alternate_color(request: Request) -> JSONResponse:
+    payload = await _json_payload(request)
+    anchor_product_id = payload.get("anchor_product_id")
+    occasion = payload.get("occasion")
+    if not anchor_product_id or not occasion:
+        return _bad_request("Missing required fields: anchor_product_id, occasion")
+
+    result = check_alternate_color_back_office(
+        anchor_product_id=str(anchor_product_id),
+        occasion=str(occasion),
+        requested_color=payload.get("requested_color"),
+        preferred_size=str(payload.get("preferred_size", PREFERRED_SIZE)),
+        nearby_stores=payload.get("nearby_stores"),
+    )
+    return JSONResponse(_alternate_color_response(result))
+
+
+async def api_build_outfit(request: Request) -> JSONResponse:
+    payload = await _json_payload(request)
+    anchor_product_id = payload.get("anchor_product_id")
+    occasion = payload.get("occasion")
+    if not anchor_product_id or not occasion:
+        return _bad_request("Missing required fields: anchor_product_id, occasion")
+
+    result = build_outfit_recommendations(
+        anchor_product_id=str(anchor_product_id),
+        occasion=str(occasion),
+    )
+    return JSONResponse(_outfit_response(result))
+
+
+async def api_reserve_pickup(request: Request) -> JSONResponse:
+    payload = await _json_payload(request)
+    required = ["product_id", "store_name", "size", "customer_name"]
+    missing = [field for field in required if not payload.get(field)]
+    if missing:
+        return _bad_request(f"Missing required fields: {', '.join(missing)}")
+
+    result = reserve_store_pickup(
+        product_id=str(payload["product_id"]),
+        store_name=str(payload["store_name"]),
+        size=str(payload["size"]),
+        customer_name=str(payload["customer_name"]),
+    )
+    return JSONResponse(result)
+
+
+async def api_verify_back_office(request: Request) -> JSONResponse:
+    payload = await _json_payload(request)
+    required = [
+        "product_id",
+        "store_name",
+        "size",
+        "customer_name",
+        "invoice_id",
+        "shipped_date",
+    ]
+    missing = [field for field in required if not payload.get(field)]
+    if missing:
+        return _bad_request(f"Missing required fields: {', '.join(missing)}")
+
+    result = verify_back_office_availability(
+        product_id=str(payload["product_id"]),
+        store_name=str(payload["store_name"]),
+        size=str(payload["size"]),
+        customer_name=str(payload["customer_name"]),
+        invoice_id=str(payload["invoice_id"]),
+        shipped_date=str(payload["shipped_date"]),
+    )
+    return JSONResponse(result)
+
+
 app = mcp_app
 app.mount("/images", StaticFiles(directory=str(BASE_DIR / "images")), name="images")
 app.add_route("/", root, methods=["GET"])
 app.add_route("/health", health, methods=["GET"])
+app.add_route("/openapi.json", openapi, methods=["GET"])
+app.add_route("/privacy", privacy, methods=["GET"])
+app.add_route("/gpt-instructions.txt", gpt_instructions, methods=["GET"])
+app.add_route("/api/match-from-style-brief", api_match_from_style_brief, methods=["POST"])
+app.add_route("/api/match-from-demo-photo", api_match_from_demo_photo, methods=["POST"])
+app.add_route("/api/check-inventory", api_check_inventory, methods=["POST"])
+app.add_route("/api/check-alternate-color", api_check_alternate_color, methods=["POST"])
+app.add_route("/api/build-outfit", api_build_outfit, methods=["POST"])
+app.add_route("/api/reserve-pickup", api_reserve_pickup, methods=["POST"])
+app.add_route("/api/verify-back-office", api_verify_back_office, methods=["POST"])
 
 
 if __name__ == "__main__":

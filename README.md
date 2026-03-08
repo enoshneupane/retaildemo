@@ -30,6 +30,22 @@ This repo also includes a remote-ready MCP server for ChatGPT in `mcp_server.py`
 For ChatGPT uploads, the model should inspect the uploaded dress image and call the chat-image matching tool. The MCP server itself does not read chat attachments directly.
 The dress-match tools now expose a ChatGPT app view that renders the recommended dresses as an image card carousel with product details.
 
+## Custom GPT Actions
+
+This service also exposes a REST API for Custom GPT Actions on the same deployment.
+
+- OpenAPI schema: `/openapi.json`
+- Privacy policy: `/privacy`
+- Suggested GPT instructions: `/gpt-instructions.txt`
+
+For the current Render deployment:
+
+- OpenAPI schema: `https://retailnext-mcp.onrender.com/openapi.json`
+- Privacy policy: `https://retailnext-mcp.onrender.com/privacy`
+- Suggested GPT instructions: `https://retailnext-mcp.onrender.com/gpt-instructions.txt`
+
+Use the action API when building a Custom GPT. Keep the MCP URL for ChatGPT Apps/Connectors only.
+
 Run it locally for testing:
 
 ```bash
