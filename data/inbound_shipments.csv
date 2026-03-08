@@ -1,0 +1,3 @@
+shipment_id,invoice_id,product_id,store_name,size,quantity,invoice_status,shipment_status,shipped_date,eta_window,associate_note
+SHIP4001,INV-90341,RN2006,Palo Alto,6,1,Invoiced,Received in back office,2026-03-08,Ready for same-day pull,Champagne alternate requested by event client
+SHIP4002,INV-90342,RN2006,San Francisco Union Square,6,1,Invoiced,In transit from stockroom,2026-03-08,Expected on floor after 5:30 PM,Secondary unit pending floor scan

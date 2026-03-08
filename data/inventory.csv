@@ -1,0 +1,11 @@
+inventory_id,product_id,store_name,size,quantity,pickup_available,reserve_eligible
+INV2001,RN2001,San Francisco Union Square,6,0,No,No
+INV2002,RN2001,Palo Alto,6,1,Yes,Yes
+INV2003,RN2001,San Jose Santana Row,8,2,Yes,Yes
+INV2004,RN2002,Palo Alto,7,3,Yes,Yes
+INV2005,RN2003,Palo Alto,OS,2,Yes,Yes
+INV2006,RN2004,San Francisco Union Square,6,1,Yes,Yes
+INV2007,RN2005,San Jose Santana Row,6,4,Yes,Yes
+INV2008,RN2007,Palo Alto,OS,5,Yes,Yes
+INV2009,RN2008,Palo Alto,OS,2,Yes,Yes
+INV2010,RN2009,San Jose Santana Row,7,3,Yes,Yes

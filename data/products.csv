@@ -1,0 +1,10 @@
+product_id,product_name,category,occasion,color,material,style_tags,size_range,price,image_path,brand
+RN2001,Noir Satin Column Gown,Dress,Black Tie,Black,Satin,"formal,evening,elegant,luxury",2|4|6|8,1290,images/products/noir_satin_gown.jpg,Valentina Milano
+RN2002,Crystal Stiletto Heel,Shoes,Black Tie,Silver,Leather,"heels,formal,evening,luxury",6|7|8|9,620,images/products/crystal_stiletto_heel.jpg,Maison Celeste
+RN2003,Silver Box Clutch,Bag,Black Tie,Silver,Metallic,"clutch,evening,luxury,party",OS,540,images/products/silver_box_clutch.jpg,Aurelia House
+RN2004,Emerald Silk Gown,Dress,Gala,Emerald,Silk,"formal,elegant,modern,luxury",2|4|6|8,1490,images/products/emerald_silk_gown.jpg,Valentina Milano
+RN2005,Black Feather Mini Dress,Dress,Cocktail,Black,Crepe,"party,modern,statement,luxury",2|4|6|8,980,images/products/black_feather_mini.jpg,Noire Atelier
+RN2006,Champagne Wrap Gown,Dress,Formal,Champagne,Satin,"formal,soft,evening,luxury",2|4|6|8,1180,images/products/champagne_wrap_gown.jpg,Maison Celeste
+RN2007,Pearl Drop Earrings,Jewelry,Black Tie,Pearl,Pearl,"accessory,luxury,evening,elegant",OS,310,images/products/pearl_drop_earrings.jpg,Aurelia House
+RN2008,Black Satin Evening Shawl,Accessory,Black Tie,Black,Satin,"shawl,evening,formal,luxury",OS,260,images/products/satin_shawl_black.jpg,Valentina Milano
+RN2009,Metallic Strap Heel,Shoes,Gala,Silver,Leather,"heels,party,evening,luxury",6|7|8|9,480,images/products/metallic_strap_heel.jpg,Maison Celeste

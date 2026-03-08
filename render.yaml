@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: retailnext-mcp
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: MCP_PATH
+        value: /mcp
