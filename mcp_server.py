@@ -1,9 +1,14 @@
 import os
+from functools import lru_cache
+from io import BytesIO
 from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.server.apps import AppConfig, ResourceCSP
 from fastmcp.tools.tool import ToolResult
+from fastmcp.utilities.types import Image
+from mcp.types import TextContent
+from PIL import Image as PILImage
 import uvicorn
 from starlette.staticfiles import StaticFiles
 from starlette.responses import JSONResponse
@@ -33,6 +38,18 @@ PUBLIC_BASE_URL = (
     or f"http://127.0.0.1:{MCP_PORT}"
 ).rstrip("/")
 MATCH_CAROUSEL_URI = "ui://retailnext/match-carousel.html"
+OPENAI_TOOL_UI_META = {
+    "openai/outputTemplate": MATCH_CAROUSEL_URI,
+    "openai/toolInvocation/invoking": "Finding top dress matches",
+    "openai/toolInvocation/invoked": "Top dress matches ready",
+}
+OPENAI_RESOURCE_UI_META = {
+    "openai/widgetDescription": "Shows the top 3 dress matches as swipeable cards with images and key details.",
+    "openai/widgetPrefersBorder": True,
+    "openai/widgetCSP": {
+        "resource_domains": [PUBLIC_BASE_URL, "https://cdn.jsdelivr.net"],
+    },
+}
 
 READ_ONLY_TOOL = {
     "readOnlyHint": True,
@@ -78,6 +95,35 @@ def _product_with_image_url(product: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _local_image_path(image_path: str | None) -> str | None:
+    if not image_path:
+        return None
+    candidate = BASE_DIR / image_path
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+@lru_cache(maxsize=16)
+def _thumbnail_bytes(image_path: str) -> bytes:
+    with PILImage.open(image_path) as img:
+        working = img.convert("RGB")
+        working.thumbnail((720, 900))
+        buffer = BytesIO()
+        working.save(buffer, format="JPEG", quality=74, optimize=True)
+        return buffer.getvalue()
+
+
+def _image_block(match: dict[str, Any]) -> Any | None:
+    local_path = _local_image_path(match.get("image_path"))
+    if not local_path:
+        return None
+    return Image(
+        data=_thumbnail_bytes(local_path),
+        format="jpeg",
+    ).to_image_content()
+
+
 def _match_reason(analysis: dict[str, Any], product: dict[str, Any]) -> str:
     reasons = []
 
@@ -106,7 +152,7 @@ def _match_reason(analysis: dict[str, Any], product: dict[str, Any]) -> str:
 
 def _carousel_matches(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cards = []
-    for rank, match in enumerate(matches, start=1):
+    for rank, match in enumerate(matches[:3], start=1):
         enriched = _product_with_image_url(match)
         cards.append(
             {
@@ -131,8 +177,25 @@ def _match_summary(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> s
 
 def _match_tool_result(analysis: dict[str, Any], matches: list[dict[str, Any]]) -> ToolResult:
     cards = _carousel_matches(analysis, matches)
+    content: list[Any] = [TextContent(type="text", text=_match_summary(analysis, cards))]
+
+    for match in cards:
+        content.append(
+            TextContent(
+                type="text",
+                text=(
+                    f"Top {match['rank']}: {match['product_name']} by {match['brand']} | "
+                    f"${match['price']} | {match['color']} | {match['occasion']}. "
+                    f"{match['match_reason']}"
+                ),
+            )
+        )
+        image_block = _image_block(match)
+        if image_block is not None:
+            content.append(image_block)
+
     return ToolResult(
-        content=_match_summary(analysis, cards),
+        content=content,
         structured_content={
             "analysis": analysis,
             "matches": cards,
@@ -149,6 +212,7 @@ def _match_tool_result(analysis: dict[str, Any], matches: list[dict[str, Any]]) 
         ),
         prefers_border=True,
     ),
+    meta=OPENAI_RESOURCE_UI_META,
 )
 def match_carousel_resource() -> str:
     return """<!doctype html>
@@ -487,6 +551,7 @@ def analyze_inspiration_photo(file_name: str = "gala_inspiration.jpg") -> dict[s
     ),
     annotations=READ_ONLY_TOOL,
     app=AppConfig(resource_uri=MATCH_CAROUSEL_URI, prefers_border=True),
+    meta=OPENAI_TOOL_UI_META,
 )
 def find_matching_products_from_photo(file_name: str = "gala_inspiration.jpg") -> dict[str, Any]:
     analysis = analyze_uploaded_photo(file_name)
@@ -510,6 +575,7 @@ def find_matching_products_from_photo(file_name: str = "gala_inspiration.jpg") -
     ),
     annotations=READ_ONLY_TOOL,
     app=AppConfig(resource_uri=MATCH_CAROUSEL_URI, prefers_border=True),
+    meta=OPENAI_TOOL_UI_META,
 )
 def find_matching_products_from_chat_image(
     category: str,
@@ -532,6 +598,7 @@ def find_matching_products_from_chat_image(
     description="Search the product catalog using structured styling attributes.",
     annotations=READ_ONLY_TOOL,
     app=AppConfig(resource_uri=MATCH_CAROUSEL_URI, prefers_border=True),
+    meta=OPENAI_TOOL_UI_META,
 )
 def search_products_by_attributes(
     category: str, occasion: str, color: str, style_tags: list[str]

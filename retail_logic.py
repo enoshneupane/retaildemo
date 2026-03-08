@@ -212,7 +212,7 @@ def search_products(category: str, occasion: str, color: str, style_tags: List[s
                 }
             )
     results = sorted(results, key=lambda x: x["match_score"], reverse=True)
-    return {"status": "success", "results": results[:5]}
+    return {"status": "success", "results": results[:3]}
 
 
 def get_product_by_id(product_id: str) -> Dict[str, Any]:
